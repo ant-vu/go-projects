@@ -8,11 +8,25 @@ import (
 	"time"
 )
 
+// TaskPriority represents the priority of a task
+type TaskPriority int
+
+const (
+	// LowPriority represents a low-priority task
+	LowPriority TaskPriority = iota
+	// MediumPriority represents a medium-priority task
+	MediumPriority
+	// HighPriority represents a high-priority task
+	HighPriority
+)
+
 // Task represents a task to be executed
 type Task struct {
 	id      int
 	timeout time.Duration
+	priority TaskPriority
 	fn      func(ctx context.Context) error
+	resultChan chan error
 }
 
 // WorkerPool represents a pool of worker goroutines
@@ -77,6 +91,9 @@ func (wp *WorkerPool) worker() {
 			ctx, cancel := context.WithTimeout(context.Background(), task.timeout)
 			err := task.fn(ctx)
 			cancel()
+			if task.resultChan != nil {
+				task.resultChan <- err
+			}
 			if err != nil {
 				fmt.Printf("Task %d failed with error: %v\n", task.id, err)
 			} else {
@@ -93,6 +110,13 @@ func (wp *WorkerPool) worker() {
 // ExecuteTask sends a task to the worker pool
 func (wp *WorkerPool) ExecuteTask(task Task) {
 	wp.taskChan <- task
+}
+
+// ExecuteTaskWithResult sends a task to the worker pool and returns the result
+func (wp *WorkerPool) ExecuteTaskWithResult(task Task) error {
+	task.resultChan = make(chan error, 1)
+	wp.ExecuteTask(task)
+	return <-task.resultChan
 }
 
 // Stop stops the worker pool
@@ -114,6 +138,7 @@ func main() {
 		task := Task{
 			id:      i,
 			timeout: 2 * time.Second,
+			priority: MediumPriority,
 			fn: func(ctx context.Context) error {
 				select {
 				case <-ctx.Done():
@@ -123,7 +148,10 @@ func main() {
 				}
 			},
 		}
-		wp.ExecuteTask(task)
+		err := wp.ExecuteTaskWithResult(task)
+		if err != nil {
+			fmt.Printf("Task %d failed with error: %v\n", task.id, err)
+		}
 	}
 	time.Sleep(5 * time.Second) // Allow tasks to complete
 	fmt.Printf("Worker pool stats: %+v\n", wp.GetStats())
