@@ -162,6 +162,11 @@ func (g *Game) DrawCard() {
 	g.Players[g.CurrentPlayer].DrawCard(g.Deck)
 }
 
+// HasWon checks if the current player has won
+func (g *Game) HasWon() bool {
+	return len(g.Players[g.CurrentPlayer].Hand) == 0
+}
+
 func main() {
 	game := NewGame(2)
 	for {
@@ -174,6 +179,7 @@ func main() {
 		for _, card := range game.Discard {
 			fmt.Println(card)
 		}
+		fmt.Printf("Cards left in deck: %d\n", len(game.Deck.Cards))
 		var action string
 		fmt.Print("Enter 'play <index>' to play a card, 'draw' to draw a card, or 'quit' to quit: ")
 		fmt.Scanln(&action)
@@ -181,10 +187,19 @@ func main() {
 			break
 		} else if action == "draw" {
 			game.DrawCard()
+			game.CurrentPlayer = (game.CurrentPlayer + 1) % len(game.Players)
 		} else if len(action) > 4 && action[:4] == "play" {
 			var index int
 			fmt.Sscan(action[5:], &index)
-			game.PlayCard(index)
+			if !game.PlayCard(index) {
+				fmt.Println("Invalid move. Try again.")
+			}
+			if game.HasWon() {
+				fmt.Printf("Player %d wins!\n", game.CurrentPlayer+1)
+				break
+			}
+		} else {
+			fmt.Println("Invalid action. Try again.")
 		}
 	}
 }
