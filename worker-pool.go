@@ -27,15 +27,18 @@ type Task struct {
 	priority TaskPriority
 	fn      func(ctx context.Context) error
 	resultChan chan error
+	retryCount int
 }
 
 // WorkerPool represents a pool of worker goroutines
 type WorkerPool struct {
-	taskChan chan Task
+	taskQueue chan Task
 	wg       sync.WaitGroup
 	stopChan chan struct{}
 	stats    Stats
 	workerCount int32
+	retryDelay time.Duration
+	monitoringInterval time.Duration
 }
 
 // Stats represents worker pool statistics
@@ -45,12 +48,15 @@ type Stats struct {
 }
 
 // NewWorkerPool returns a new worker pool
-func NewWorkerPool(numWorkers int, taskQueueSize int) *WorkerPool {
+func NewWorkerPool(numWorkers int, taskQueueSize int, retryDelay time.Duration, monitoringInterval time.Duration) *WorkerPool {
 	wp := &WorkerPool{
-		taskChan: make(chan Task, taskQueueSize),
+		taskQueue: make(chan Task, taskQueueSize),
 		stopChan: make(chan struct{}),
+		retryDelay: retryDelay,
+		monitoringInterval: monitoringInterval,
 	}
 	wp.setWorkerCount(numWorkers)
+	go wp.monitor()
 	return wp
 }
 
@@ -83,7 +89,7 @@ func (wp *WorkerPool) worker() {
 	defer wp.wg.Done()
 	for {
 		select {
-		case task, ok := <-wp.taskChan:
+		case task, ok := <-wp.taskQueue:
 			if !ok {
 				return
 			}
@@ -95,7 +101,13 @@ func (wp *WorkerPool) worker() {
 				task.resultChan <- err
 			}
 			if err != nil {
-				fmt.Printf("Task %d failed with error: %v\n", task.id, err)
+				if task.retryCount > 0 {
+					task.retryCount--
+					time.Sleep(wp.retryDelay)
+					wp.taskQueue <- task
+				} else {
+					fmt.Printf("Task %d failed with error: %v\n", task.id, err)
+				}
 			} else {
 				atomic.AddUint64(&wp.stats.TasksExecuted, 1)
 				atomic.AddInt64((*int64)(&wp.stats.TotalExecutionTime), int64(time.Since(startTime)))
@@ -109,7 +121,7 @@ func (wp *WorkerPool) worker() {
 
 // ExecuteTask sends a task to the worker pool
 func (wp *WorkerPool) ExecuteTask(task Task) {
-	wp.taskChan <- task
+	wp.taskQueue <- task
 }
 
 // ExecuteTaskWithResult sends a task to the worker pool and returns the result
@@ -121,7 +133,7 @@ func (wp *WorkerPool) ExecuteTaskWithResult(task Task) error {
 
 // Stop stops the worker pool
 func (wp *WorkerPool) Stop() {
-	close(wp.taskChan)
+	close(wp.taskQueue)
 	wp.wg.Wait()
 }
 
@@ -132,8 +144,16 @@ func (wp *WorkerPool) GetStats() Stats {
 	}
 }
 
+func (wp *WorkerPool) monitor() {
+	ticker := time.NewTicker(wp.monitoringInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		fmt.Printf("Worker pool stats: %+v\n", wp.GetStats())
+	}
+}
+
 func main() {
-	wp := NewWorkerPool(5, 10)
+	wp := NewWorkerPool(5, 10, 1*time.Second, 5*time.Second)
 	for i := 0; i < 10; i++ {
 		task := Task{
 			id:      i,
@@ -147,13 +167,13 @@ func main() {
 					return nil
 				}
 			},
+			retryCount: 3,
 		}
 		err := wp.ExecuteTaskWithResult(task)
 		if err != nil {
 			fmt.Printf("Task %d failed with error: %v\n", task.id, err)
 		}
 	}
-	time.Sleep(5 * time.Second) // Allow tasks to complete
-	fmt.Printf("Worker pool stats: %+v\n", wp.GetStats())
+	time.Sleep(30 * time.Second) // Allow tasks to complete
 	wp.Stop()
 }
