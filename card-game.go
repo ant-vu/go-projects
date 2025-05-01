@@ -88,12 +88,13 @@ func (d *Deck) DealCard() *Card {
 
 // Player represents a player in the game
 type Player struct {
+	Name string
 	Hand []*Card
 }
 
 // NewPlayer returns a new player
-func NewPlayer() *Player {
-	return &Player{Hand: make([]*Card, 0)}
+func NewPlayer(name string) *Player {
+	return &Player{Name: name, Hand: make([]*Card, 0)}
 }
 
 // DrawCard draws a card from the deck and adds it to the player's hand
@@ -120,21 +121,30 @@ type Game struct {
 	Discard    []*Card
 	Players    []*Player
 	CurrentPlayer int
+	Rounds     int
 }
 
 // NewGame returns a new game
 func NewGame(numPlayers int) *Game {
+	var players []*Player
+	for i := 0; i < numPlayers; i++ {
+		var name string
+		fmt.Printf("Enter player %d's name: ", i+1)
+		fmt.Scanln(&name)
+		players = append(players, NewPlayer(name))
+	}
+
 	game := &Game{
 		Deck:       NewDeck(),
 		Discard:    make([]*Card, 0),
-		Players:    make([]*Player, numPlayers),
+		Players:    players,
 		CurrentPlayer: 0,
+		Rounds:     0,
 	}
 	game.Deck.Shuffle()
-	for i := range game.Players {
-		game.Players[i] = NewPlayer()
+	for _, player := range game.Players {
 		for j := 0; j < 5; j++ {
-			game.Players[i].DrawCard(game.Deck)
+			player.DrawCard(game.Deck)
 		}
 	}
 	game.Discard = append(game.Discard, game.Deck.DealCard())
@@ -151,6 +161,7 @@ func (g *Game) PlayCard(index int) bool {
 	if card.Suit == topCard.Suit || card.Rank == topCard.Rank {
 		g.Discard = append(g.Discard, card)
 		g.CurrentPlayer = (g.CurrentPlayer + 1) % len(g.Players)
+		g.Rounds++
 		return true
 	}
 	g.Players[g.CurrentPlayer].Hand = append(g.Players[g.CurrentPlayer].Hand, card)
@@ -160,6 +171,8 @@ func (g *Game) PlayCard(index int) bool {
 // DrawCard draws a card from the deck and adds it to the current player's hand
 func (g *Game) DrawCard() {
 	g.Players[g.CurrentPlayer].DrawCard(g.Deck)
+	g.CurrentPlayer = (g.CurrentPlayer + 1) % len(g.Players)
+	g.Rounds++
 }
 
 // HasWon checks if the current player has won
@@ -168,9 +181,11 @@ func (g *Game) HasWon() bool {
 }
 
 func main() {
-	game := NewGame(2)
+	numPlayers := 2
+	game := NewGame(numPlayers)
 	for {
-		fmt.Printf("Player %d's turn\n", game.CurrentPlayer+1)
+		fmt.Printf("\nRound %d\n", game.Rounds+1)
+		fmt.Printf("Player %s's turn\n", game.Players[game.CurrentPlayer].Name)
 		fmt.Println("Hand:")
 		for i, card := range game.Players[game.CurrentPlayer].Hand {
 			fmt.Printf("%d: %s\n", i, card)
@@ -179,7 +194,8 @@ func main() {
 		for _, card := range game.Discard {
 			fmt.Println(card)
 		}
-		fmt.Printf("Cards left in deck: %d\n", len(game.Deck.Cards))
+		fmt.Println("Draw pile:")
+		fmt.Printf("%d cards left\n", len(game.Deck.Cards))
 		var action string
 		fmt.Print("Enter 'play <index>' to play a card, 'draw' to draw a card, or 'quit' to quit: ")
 		fmt.Scanln(&action)
@@ -187,7 +203,6 @@ func main() {
 			break
 		} else if action == "draw" {
 			game.DrawCard()
-			game.CurrentPlayer = (game.CurrentPlayer + 1) % len(game.Players)
 		} else if len(action) > 4 && action[:4] == "play" {
 			var index int
 			fmt.Sscan(action[5:], &index)
@@ -195,7 +210,7 @@ func main() {
 				fmt.Println("Invalid move. Try again.")
 			}
 			if game.HasWon() {
-				fmt.Printf("Player %d wins!\n", game.CurrentPlayer+1)
+				fmt.Printf("Player %s wins!\n", game.Players[game.CurrentPlayer].Name)
 				break
 			}
 		} else {
