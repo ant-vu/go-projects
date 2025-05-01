@@ -131,6 +131,11 @@ func (wp *WorkerPool) ExecuteTaskWithResult(task Task) error {
 	return <-task.resultChan
 }
 
+// AdjustWorkerCount adjusts the worker count dynamically
+func (wp *WorkerPool) AdjustWorkerCount(numWorkers int) {
+	wp.setWorkerCount(numWorkers)
+}
+
 // Stop stops the worker pool
 func (wp *WorkerPool) Stop() {
 	close(wp.taskQueue)
@@ -149,6 +154,13 @@ func (wp *WorkerPool) monitor() {
 	defer ticker.Stop()
 	for range ticker.C {
 		fmt.Printf("Worker pool stats: %+v\n", wp.GetStats())
+		// Dynamically adjust worker count based on task queue size
+		queueSize := len(wp.taskQueue)
+		if queueSize > 5 {
+			wp.AdjustWorkerCount(int(atomic.LoadInt32(&wp.workerCount)) + 2)
+		} else if queueSize < 2 {
+			wp.AdjustWorkerCount(int(atomic.LoadInt32(&wp.workerCount)) - 1)
+		}
 	}
 }
 
