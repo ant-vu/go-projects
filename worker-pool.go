@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,7 +33,7 @@ type Task struct {
 
 // WorkerPool represents a pool of worker goroutines
 type WorkerPool struct {
-	taskQueue chan Task
+	taskQueue *priorityQueue
 	wg       sync.WaitGroup
 	stopChan chan struct{}
 	stats    Stats
@@ -50,7 +51,7 @@ type Stats struct {
 // NewWorkerPool returns a new worker pool
 func NewWorkerPool(numWorkers int, taskQueueSize int, retryDelay time.Duration, monitoringInterval time.Duration) *WorkerPool {
 	wp := &WorkerPool{
-		taskQueue: make(chan Task, taskQueueSize),
+		taskQueue: newPriorityQueue(taskQueueSize),
 		stopChan: make(chan struct{}),
 		retryDelay: retryDelay,
 		monitoringInterval: monitoringInterval,
@@ -89,45 +90,49 @@ func (wp *WorkerPool) worker() {
 	defer wp.wg.Done()
 	for {
 		select {
-		case task, ok := <-wp.taskQueue:
-			if !ok {
-				return
-			}
-			startTime := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), task.timeout)
-			err := task.fn(ctx)
-			cancel()
-			if task.resultChan != nil {
-				task.resultChan <- err
-			}
-			if err != nil {
-				if task.retryCount > 0 {
-					task.retryCount--
-					time.Sleep(wp.retryDelay)
-					wp.taskQueue <- task
-				} else {
-					fmt.Printf("Task %d failed with error: %v\n", task.id, err)
-				}
-			} else {
-				atomic.AddUint64(&wp.stats.TasksExecuted, 1)
-				atomic.AddInt64((*int64)(&wp.stats.TotalExecutionTime), int64(time.Since(startTime)))
-				fmt.Printf("Worker executed task %d in %v\n", task.id, time.Since(startTime))
-			}
+		case task := <-wp.taskQueue.highPriority:
+			wp.executeTask(task)
+		case task := <-wp.taskQueue.mediumPriority:
+			wp.executeTask(task)
+		case task := <-wp.taskQueue.lowPriority:
+			wp.executeTask(task)
 		case <-wp.stopChan:
 			return
 		}
 	}
 }
 
+func (wp *WorkerPool) executeTask(task Task) {
+	startTime := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), task.timeout)
+	err := task.fn(ctx)
+	cancel()
+	if task.resultChan != nil {
+		task.resultChan <- err
+	}
+	if err != nil {
+		log.Printf("Task %d failed with error: %v", task.id, err)
+		if task.retryCount > 0 {
+			task.retryCount--
+			time.Sleep(wp.retryDelay)
+			wp.taskQueue.push(task)
+		}
+	} else {
+		atomic.AddUint64(&wp.stats.TasksExecuted, 1)
+		atomic.AddInt64((*int64)(&wp.stats.TotalExecutionTime), int64(time.Since(startTime)))
+		log.Printf("Worker executed task %d in %v", task.id, time.Since(startTime))
+	}
+}
+
 // ExecuteTask sends a task to the worker pool
 func (wp *WorkerPool) ExecuteTask(task Task) {
-	wp.taskQueue <- task
+	wp.taskQueue.push(task)
 }
 
 // ExecuteTaskWithResult sends a task to the worker pool and returns the result
 func (wp *WorkerPool) ExecuteTaskWithResult(task Task) error {
 	task.resultChan = make(chan error, 1)
-	wp.ExecuteTask(task)
+	wp.taskQueue.push(task)
 	return <-task.resultChan
 }
 
@@ -138,7 +143,9 @@ func (wp *WorkerPool) AdjustWorkerCount(numWorkers int) {
 
 // Stop stops the worker pool
 func (wp *WorkerPool) Stop() {
-	close(wp.taskQueue)
+	close(wp.taskQueue.highPriority)
+	close(wp.taskQueue.mediumPriority)
+	close(wp.taskQueue.lowPriority)
 	wp.wg.Wait()
 }
 
@@ -152,15 +159,43 @@ func (wp *WorkerPool) GetStats() Stats {
 func (wp *WorkerPool) monitor() {
 	ticker := time.NewTicker(wp.monitoringInterval)
 	defer ticker.Stop()
+	prevTasksExecuted := wp.GetStats().TasksExecuted
 	for range ticker.C {
-		fmt.Printf("Worker pool stats: %+v\n", wp.GetStats())
-		// Dynamically adjust worker count based on task queue size
-		queueSize := len(wp.taskQueue)
-		if queueSize > 5 {
-			wp.AdjustWorkerCount(int(atomic.LoadInt32(&wp.workerCount)) + 2)
-		} else if queueSize < 2 {
+		stats := wp.GetStats()
+		taskExecutionRate := float64(stats.TasksExecuted-prevTasksExecuted) / wp.monitoringInterval.Seconds()
+		prevTasksExecuted = stats.TasksExecuted
+		queueSize := len(wp.taskQueue.highPriority) + len(wp.taskQueue.mediumPriority) + len(wp.taskQueue.lowPriority)
+		if taskExecutionRate < float64(queueSize) {
+			wp.AdjustWorkerCount(int(atomic.LoadInt32(&wp.workerCount)) + 1)
+		} else if taskExecutionRate > float64(queueSize)*2 {
 			wp.AdjustWorkerCount(int(atomic.LoadInt32(&wp.workerCount)) - 1)
 		}
+		log.Printf("Worker pool stats: %+v", wp.GetStats())
+	}
+}
+
+func newPriorityQueue(taskQueueSize int) *priorityQueue {
+	return &priorityQueue{
+		highPriority: make(chan Task, taskQueueSize),
+		mediumPriority: make(chan Task, taskQueueSize),
+		lowPriority: make(chan Task, taskQueueSize),
+	}
+}
+
+type priorityQueue struct {
+	highPriority chan Task
+	mediumPriority chan Task
+	lowPriority chan Task
+}
+
+func (pq *priorityQueue) push(task Task) {
+	switch task.priority {
+	case HighPriority:
+		pq.highPriority <- task
+	case MediumPriority:
+		pq.mediumPriority <- task
+	case LowPriority:
+		pq.lowPriority <- task
 	}
 }
 
@@ -183,7 +218,7 @@ func main() {
 		}
 		err := wp.ExecuteTaskWithResult(task)
 		if err != nil {
-			fmt.Printf("Task %d failed with error: %v\n", task.id, err)
+			log.Printf("Task %d failed with error: %v", task.id, err)
 		}
 	}
 	time.Sleep(30 * time.Second) // Allow tasks to complete
