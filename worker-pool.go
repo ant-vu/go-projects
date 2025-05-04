@@ -10,86 +10,119 @@ import (
 	"time"
 )
 
-// TaskPriority represents the priority of a task
-type TaskPriority int
+// Priority represents the priority of a task
+type Priority int
 
 const (
-	// LowPriority represents a low-priority task
-	LowPriority TaskPriority = iota
-	// MediumPriority represents a medium-priority task
-	MediumPriority
-	// HighPriority represents a high-priority task
-	HighPriority
+	// Low represents a low-priority task
+	Low Priority = iota
+	// Medium represents a medium-priority task
+	Medium
+	// High represents a high-priority task
+	High
 )
+
+// TaskFunc represents a task function
+type TaskFunc func(ctx context.Context) error
 
 // Task represents a task to be executed
 type Task struct {
-	id      int
-	timeout time.Duration
-	priority TaskPriority
-	fn      func(ctx context.Context) error
+	id         int
+	timeout    time.Duration
+	priority   Priority
+	fn         TaskFunc
 	resultChan chan error
 	retryCount int
 }
 
+// WorkerPoolConfig represents worker pool configuration
+type WorkerPoolConfig struct {
+	NumWorkers         int
+	TaskQueueSize      int
+	RetryDelay         time.Duration
+	MonitoringInterval time.Duration
+}
+
 // WorkerPool represents a pool of worker goroutines
 type WorkerPool struct {
-	taskQueue *priorityQueue
-	wg       sync.WaitGroup
-	stopChan chan struct{}
-	stats    Stats
-	workerCount int32
-	retryDelay time.Duration
+	taskQueue       *priorityQueue
+	wg              sync.WaitGroup
+	stopChan        chan struct{}
+	stats           Stats
+	workerCount     int32
+	retryDelay      time.Duration
 	monitoringInterval time.Duration
 }
 
 // Stats represents worker pool statistics
 type Stats struct {
-	TasksExecuted uint64
+	TasksExecuted      uint64
 	TotalExecutionTime time.Duration
 }
 
 // NewWorkerPool returns a new worker pool
-func NewWorkerPool(numWorkers int, taskQueueSize int, retryDelay time.Duration, monitoringInterval time.Duration) *WorkerPool {
+func NewWorkerPool(cfg WorkerPoolConfig) *WorkerPool {
 	wp := &WorkerPool{
-		taskQueue: newPriorityQueue(taskQueueSize),
-		stopChan: make(chan struct{}),
-		retryDelay: retryDelay,
-		monitoringInterval: monitoringInterval,
+		taskQueue:       newPriorityQueue(cfg.TaskQueueSize),
+		stopChan:        make(chan struct{}),
+		retryDelay:      cfg.RetryDelay,
+		monitoringInterval: cfg.MonitoringInterval,
 	}
-	wp.setWorkerCount(numWorkers)
+	wp.setWorkerCount(cfg.NumWorkers)
 	go wp.monitor()
-	go wp.generateTasks()
 	return wp
 }
 
+// ExecuteTask executes a task
+func (wp *WorkerPool) ExecuteTask(task Task) {
+	wp.taskQueue.push(task)
+}
+
+// Stop stops the worker pool
+func (wp *WorkerPool) Stop() {
+	close(wp.stopChan)
+	wp.wg.Wait()
+}
+
+// generateTasks generates tasks for demonstration purposes
 func (wp *WorkerPool) generateTasks() {
 	taskID := 0
 	for {
-		task := Task{
-			id:      taskID,
-			timeout: 2 * time.Second,
-			priority: TaskPriority(rand.Intn(3)),
-			fn: func(ctx context.Context) error {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(time.Duration(rand.Intn(2)) * time.Second):
-					return nil
-				}
-			},
-			retryCount: 3,
+		select {
+		case <-wp.stopChan:
+			return
+		default:
+			task := Task{
+				id:      taskID,
+				timeout: 2 * time.Second,
+				priority: Priority(rand.Intn(3)),
+				fn: func(ctx context.Context) error {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(time.Duration(rand.Intn(2)) * time.Second):
+						return nil
+					}
+				},
+				retryCount: 3,
+			}
+			wp.ExecuteTask(task)
+			taskID++
+			time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond)
 		}
-		wp.ExecuteTask(task)
-		taskID++
-		time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond)
 	}
 }
 
-// ... (rest of the code remains the same)
-
 func main() {
-	wp := NewWorkerPool(5, 10, 1*time.Second, 5*time.Second)
+	rand.Seed(time.Now().UnixNano())
+	cfg := WorkerPoolConfig{
+		NumWorkers:         5,
+		TaskQueueSize:      10,
+		RetryDelay:         1 * time.Second,
+		MonitoringInterval: 5 * time.Second,
+	}
+	wp := NewWorkerPool(cfg)
+	go wp.generateTasks()
 	time.Sleep(30 * time.Second) // Allow tasks to complete
 	wp.Stop()
 }
