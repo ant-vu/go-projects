@@ -10,22 +10,16 @@ import (
 	"time"
 )
 
-// Priority represents the priority of a task
 type Priority int
 
 const (
-	// Low represents a low-priority task
 	Low Priority = iota
-	// Medium represents a medium-priority task
 	Medium
-	// High represents a high-priority task
 	High
 )
 
-// TaskFunc represents a task function
 type TaskFunc func(ctx context.Context) error
 
-// Task represents a task to be executed
 type Task struct {
 	id         int
 	timeout    time.Duration
@@ -35,7 +29,6 @@ type Task struct {
 	retryCount int
 }
 
-// WorkerPoolConfig represents worker pool configuration
 type WorkerPoolConfig struct {
 	NumWorkers         int
 	TaskQueueSize      int
@@ -43,7 +36,6 @@ type WorkerPoolConfig struct {
 	MonitoringInterval time.Duration
 }
 
-// WorkerPool represents a pool of worker goroutines
 type WorkerPool struct {
 	taskQueue       *priorityQueue
 	wg              sync.WaitGroup
@@ -54,14 +46,12 @@ type WorkerPool struct {
 	monitoringInterval time.Duration
 }
 
-// Stats represents worker pool statistics
 type Stats struct {
 	TasksExecuted      uint64
 	TotalExecutionTime time.Duration
 	TaskFailures       uint64
 }
 
-// NewWorkerPool returns a new worker pool
 func NewWorkerPool(cfg WorkerPoolConfig) *WorkerPool {
 	wp := &WorkerPool{
 		taskQueue:       newPriorityQueue(cfg.TaskQueueSize),
@@ -78,12 +68,10 @@ func NewWorkerPool(cfg WorkerPoolConfig) *WorkerPool {
 	return wp
 }
 
-// ExecuteTask executes a task
-func (wp *WorkerPool) ExecuteTask(task Task) {
+func (wp *WorkerPool) ExecuteTask(task *Task) {
 	wp.taskQueue.push(task)
 }
 
-// Stop stops the worker pool
 func (wp *WorkerPool) Stop() {
 	close(wp.stopChan)
 	wp.wg.Wait()
@@ -106,7 +94,11 @@ func newPriorityQueue(size int) *priorityQueue {
 func (pq *priorityQueue) push(task *Task) {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
-	pq.tasks = append(pq.tasks, task)
+	i := 0
+	for i < len(pq.tasks) && pq.tasks[i].priority > task.priority {
+		i++
+	}
+	pq.tasks = append(pq.tasks[:i], append([]*Task{task}, pq.tasks[i:]...)...)
 	pq.cond.Signal()
 }
 
@@ -146,9 +138,15 @@ func (wp *WorkerPool) executeTask(task *Task) {
 		atomic.AddUint64(&wp.stats.TaskFailures, 1)
 		if task.retryCount > 0 {
 			task.retryCount--
-			time.Sleep(wp.retryDelay)
+			retryDelay := wp.retryDelay * time.Duration(2^(3-task.retryCount))
+			log.Printf("Task %d failed with error: %v. Retrying in %s...\n", task.id, err, retryDelay)
+			time.Sleep(retryDelay)
 			wp.taskQueue.push(task)
+		} else {
+			log.Printf("Task %d failed with error: %v. No retries left.\n", task.id, err)
 		}
+	} else {
+		log.Printf("Task %d completed successfully.\n", task.id)
 	}
 }
 
@@ -210,6 +208,6 @@ func main() {
 	}
 	wp := NewWorkerPool(cfg)
 	go wp.generateTasks()
-	time.Sleep(30 * time.Second) // Allow tasks to complete
+	time.Sleep(30 * time.Second)
 	wp.Stop()
 }

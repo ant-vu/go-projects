@@ -48,7 +48,6 @@ func NewGame(numPlayers int, gameType GameType) *Game {
 		}
 		game.dealCards(game.Players[i], 7)
 	}
-	// Start the discard pile
 	game.Discard = append(game.Discard, game.Deck[0])
 	game.Deck = game.Deck[1:]
 	return game
